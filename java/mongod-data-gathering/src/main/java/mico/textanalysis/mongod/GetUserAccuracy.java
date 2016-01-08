@@ -39,6 +39,8 @@ public class GetUserAccuracy {
 					File outFile = new File(outfileName);
 		            writer = new BufferedWriter(new FileWriter(outFile));
 		            
+		            // Write header line to output file
+		            
 		            // Open the talk database and get the collection of all discussions
 		            MongoClient mongoClient = new MongoClient( "localhost" );
 					DB db = mongoClient.getDB("serengeti");
