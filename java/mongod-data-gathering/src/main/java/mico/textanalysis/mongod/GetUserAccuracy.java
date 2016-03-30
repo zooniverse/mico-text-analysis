@@ -1,18 +1,37 @@
+/**
+ * Class for computing the accuracy of serengeti users.
+ * 
+ * The main method takes two arguments: an input file and an output file.
+ * 
+ * The input file is assumed to be a .json file that stores a JSONObject 
+ * representing all the serengeti subjects, with their respective counts of
+ * classifications per species.
+ * 
+ * The behavior of the method can be modified by changing the choice of 
+ * implementation of the ClassificationScorer (see comment in main method).
+ * 
+ * The result is written to the output file in csv format with four columns:
+ * (1) Zooniverse id (2) ObjectId in the mongod database (3) number of 
+ * classifications (4) computed accuracy.
+ * 
+ * @author: henrikb@cs.umu.se
+ */
+
 package mico.textanalysis.mongod;
 
-import java.io.BufferedWriter;
-import java.io.File;
+import java.io.PrintWriter;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileWriter;
-
 import java.util.HashMap;
 import java.util.Set;
 import java.util.Iterator;
 import java.util.ArrayList;
-import java.util.Arrays;
-import org.bson.BasicBSONObject;
+
 import org.bson.types.BasicBSONList;
 import org.bson.types.ObjectId;
-
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import com.mongodb.BasicDBObject;
 import com.mongodb.DB;
@@ -25,155 +44,83 @@ public class GetUserAccuracy {
 
 	public static void main(String[] args) {
 		// Check that there is an output file name as parameter
-				if(args.length < 1){
-					System.out.println("Please specify output file.");
+				if(args.length < 2){
+					System.out.println("Please specify input and output files.");
 					System.out.println("Quitting.");
 					System.exit(0);
 				}
-				String outfileName = args[0];
-				System.out.println(outfileName);
+				String inFileName = args[0];
+				String outFileName = args[1];
+				System.out.println(inFileName);
+				System.out.println(outFileName);
 				
-				BufferedWriter writer = null;
+				// Set the classification scorer implementation
+				ClassificationScorer classificationScorer = new MajorityClassificationScorer();
+				
 				try {
-					// Create the File object and a writer for writing to it
-					File outFile = new File(outfileName);
-		            writer = new BufferedWriter(new FileWriter(outFile));
 		            
-		            // Open the talk database and get the collection of all discussions
+					// Open the serengeti database
 		            MongoClient mongoClient = new MongoClient( "localhost" );
 					DB db = mongoClient.getDB("serengeti");
+					
+					// Read all the subjects from file
+					HashMap<ObjectId,Subject> subjects = getSubjectsFromFile(inFileName);
+					System.out.println(subjects.size());
+					
+					// Get a DBCursor with all users
+					DBCollection users = db.getCollection("serengeti_users");
+					DBCursor userCursor = users.find();
+					
 					DBCollection classifications = db.getCollection("serengeti_classifications");
 					
-					// Get a DBCursor with all classifications
-					DBCursor cursor = classifications.find();
+					// Open the output file
+					FileWriter fWriter = new FileWriter(outFileName);
+		            PrintWriter writer = new PrintWriter(fWriter);
 					
-					HashMap<ObjectId,HashMap<String,Integer>> counts = new HashMap<ObjectId,HashMap<String,Integer>>();
-					HashMap<ObjectId,Integer> classificationCounts = new HashMap<ObjectId,Integer>();
-					
-					int i = 0;
-					while(cursor.hasNext()){
-						DBObject classification = cursor.next();
-						
-						// Get all the comments belonging to the discussion
-						// Iterate over the comments and write their bodies to file
-						BasicBSONList subject_ids = (BasicBSONList) classification.get("subject_ids");
-						ObjectId subject_id = (ObjectId) subject_ids.get("0");
-						
-						if(!classificationCounts.containsKey(subject_id)){
-							classificationCounts.put(subject_id, new Integer(1));
-						}else{
-							Integer oldCount = classificationCounts.get(subject_id);
-							classificationCounts.put(subject_id, new Integer(oldCount.intValue() + 1));
-						}
-						if(!counts.containsKey(subject_id)){
-							counts.put(subject_id, new HashMap<String,Integer>());
-						}
-						
-						BasicBSONList annotations = (BasicBSONList) classification.get("annotations");
-						Set<String> keySet = annotations.keySet();
-						Iterator<String> it = keySet.iterator();
-						HashMap<String,Integer> subjectCounts = counts.get(subject_id);
-						while(it.hasNext()){
-							String observation = null;
-							DBObject annotation = (DBObject)annotations.get(it.next());
-							if(annotation.containsField("species")){
-								observation = (String)annotation.get("species");
-							}else if(annotation.containsField("nothing")){
-								observation = "nothing";
-							}
-							if(observation != null){
-								if(!subjectCounts.containsKey(observation)){
-									subjectCounts.put(observation, new Integer(1));
-								}else{
-									Integer oldCount = subjectCounts.get(observation);
-									subjectCounts.put(observation, new Integer(oldCount.intValue() + 1));
-								}
-							}
-						}
-						
-						/*if(!counts.containsKey(subject_id)){
-							counts.put(subject_id, new HashMap<String,Integer>());
-						}else{
-							Integer current = counts.get(subject_id);
-							Integer updated = new Integer(current.intValue()+1);
-							counts.put(subject_id, updated);
-						}
-						
-						System.out.println(subject_id.toString());*/
-						i++;
-						if(i % 100000 == 0){
-							System.out.println(i);
-						}
-					}
-					cursor.close();
-					
-					Set<ObjectId> subjects = counts.keySet();
-					Iterator<ObjectId> it = subjects.iterator();
-					HashMap<ObjectId,ArrayList<String>> subjectResults = new HashMap<ObjectId,ArrayList<String>>();
-					while(it.hasNext()){
-						String output = "";
-						ObjectId subject = it.next();
-						int total = classificationCounts.get(subject).intValue();
-						ArrayList<String> goodObservations = new ArrayList<String>();
-						output += subject.toString() + " ";
-						HashMap<String,Integer> subjectCounts = counts.get(subject);
-						Set<String> observations = subjectCounts.keySet();
-						Iterator<String> obsIterator = observations.iterator();
-						while(obsIterator.hasNext()){
-							String observation = obsIterator.next();
-							Integer count = subjectCounts.get(observation);
-							output += observation + "(" + count + ") ";
-							if(count.doubleValue()/total > 0.5){
-								goodObservations.add(observation);
-							}
-						}
-						subjectResults.put(subject, goodObservations);
-						/*Object[] result = goodObservations.toArray();
-						Arrays.sort(result);
-						output += "Total:(" + total + ") ";
-						output +="Result:[";
-						for(int j = 0 ; j < result.length-1 ; j++){
-							output += result[j] + ",";
-						}
-						if(result.length > 0){
-							output += result[result.length-1];
-						}
-						output += "]\n";
-						writer.write(output);*/
-						
-						
-					}
-					
-					DBCollection users = db.getCollection("serengeti_users");
-					// Get a DBCursor with all users
-					DBCursor userCursor = users.find();
+		            // Iterate over the users
+		            // For each user, calculate the total score (uScore) and
+		            // then divide it by the number of classifications the user has done
 					int uCount = 0;
+					double uScore;
 					while(userCursor.hasNext()){
-						int correctClassifications = 0;
+						uScore = 0;
+						
+						// Get the users ObjectId and Zooniverse id
 						DBObject user = userCursor.next();
 						ObjectId userId = (ObjectId)user.get("_id"); 
 						int zooniverseId;
 						if(user.containsField("zooniverse_id")){
-							zooniverseId = (int)user.get("zooniverse_id");
+							Object tmp = user.get("zooniverse_id");
+							if(tmp != null){
+								zooniverseId = ((Integer)tmp).intValue();
+							}else{
+								zooniverseId = 0;
+							}
 						}else{
 							zooniverseId = 0;
 						}
-						//System.out.println("User: " + userId.toHexString());
+						
+						// Get a cursor with all the classifications the user has performed
 						BasicDBObject query = new BasicDBObject("user_id", userId);
-					
 						DBCursor userClassifications = classifications.find(query);
-						//System.out.println("Count: " + userClassifications.count());
+						
+						// Get the number of classifications by the user
 						int userClassificationCount = userClassifications.count();
+						
+						// Iterate over the classifications
 						while(userClassifications.hasNext()){
 							
 							DBObject classification = userClassifications.next();
-							ObjectId classificationId = (ObjectId)classification.get("_id");
-							ObjectId subjectID = (ObjectId)((BasicBSONList)classification.get("subject_ids")).get("0");
+							ObjectId subjectId = (ObjectId)((BasicBSONList)classification.get("subject_ids")).get("0");
+							
+							// Get the 'annotations' of the classification
 							BasicBSONList annotations = (BasicBSONList) classification.get("annotations");
 							Set<String> keySet = annotations.keySet();
 							Iterator<String> annotationIt = keySet.iterator();
 							ArrayList<String> userObs = new ArrayList<String>();
 							String observation;
+							
+							// Iterate over the annotations
 							while(annotationIt.hasNext()){
 								observation = null;
 								DBObject annotation = (DBObject)annotations.get(annotationIt.next());
@@ -186,41 +133,58 @@ public class GetUserAccuracy {
 									userObs.add(observation);
 								}
 							}
-							ArrayList<String> consensuses = subjectResults.get(subjectID);
-							boolean agrees = true;
-							if(consensuses.size() != userObs.size()){
-								agrees = false;
-							}
-							for(String s : userObs){
-								if(!consensuses.contains(s)){
-									agrees = false;
-								}
-							}
-							if(agrees){
-								correctClassifications++;
-							}
-							//System.out.println(classificationId.toHexString());
-							
+							// Get the score from the classification scorer
+							Subject subject = subjects.get(subjectId);
+							uScore += classificationScorer.scoreClassification(subject, userObs);
 						}
+						// Compute the user accuracy
 						double accuracy;
-						if(userClassificationCount > 0){
-							accuracy = correctClassifications / (new Integer(userClassificationCount).doubleValue());
+						if(uScore > 0.0){
+							accuracy = uScore / userClassificationCount;
 						}else{
 							accuracy = 0;
 						}
+						
+						// Increment the count of users that have been processed
+						// If at an even 100, write to stdout to indicate progress
 						uCount++;
 						if(uCount % 100 == 0) System.out.println(uCount);
-						//System.out.println(uCount + " " + zooniverseId + " " + userId.toString() + " " + userClassificationCount + " " + accuracy);
+						
+						// Write the entry for the user to file
 						writer.write(zooniverseId + "," + userId.toString() + "," + userClassificationCount + "," + accuracy + '\n');
-						//System.out.println("");
+						
 					}
 					
 					writer.close();
-					
+					fWriter.close();
 				} catch (Exception e) {
 					e.printStackTrace();
 				} 
 
+	}
+	
+	// Method for reading the subjects from the json input file
+	private static HashMap<ObjectId,Subject> getSubjectsFromFile(String inFile){
+		HashMap<ObjectId,Subject> result = new HashMap<ObjectId,Subject>();
+		
+		JSONTokener tokener = null;
+		try{
+			System.out.println("Reading file...");
+			tokener = new JSONTokener(new FileInputStream(inFile));
+			System.out.println("Done.");
+		}catch(FileNotFoundException e){
+			System.err.println("Couldn't find the input file file");
+		}
+		JSONObject subjects = new JSONObject(tokener);
+		Iterator<String> it = subjects.keys();
+		while(it.hasNext()){
+			String subjectId = it.next();
+			JSONObject subject = subjects.getJSONObject(subjectId);
+			Subject s = new Subject(subjectId, subject);
+			result.put(new ObjectId(subjectId), s);
+		}
+		
+		return result;
 	}
 
 }
